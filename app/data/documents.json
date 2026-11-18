@@ -1,0 +1,6 @@
+[
+  {"id": "lgtm-1", "text": "LGTM commonly refers to Loki for logs, Grafana for visualization, Tempo for traces, and Mimir for metrics."},
+  {"id": "eval-1", "text": "LLM-as-a-judge evaluation uses a language model and a versioned rubric to score another model's response. Judge outputs should be calibrated against human-labelled examples."},
+  {"id": "otel-1", "text": "OpenTelemetry provides vendor-neutral APIs, SDKs, and the OTLP protocol for emitting traces, metrics, and logs. An OpenTelemetry Collector can route these signals to different backends."},
+  {"id": "privacy-1", "text": "Prompt and response capture can expose sensitive information. Content capture should be disabled by default, redacted before export, and protected by retention controls."}
+]

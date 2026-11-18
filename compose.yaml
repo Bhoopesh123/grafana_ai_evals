@@ -1,0 +1,150 @@
+name: grafana-ai-evals
+
+x-app: &app
+  build: ./app
+  env_file: .env
+  environment:
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+  depends_on:
+    redis:
+      condition: service_healthy
+    otel-collector:
+      condition: service_started
+  restart: unless-stopped
+
+services:
+  dashboard-loader:
+    image: python:3.12-alpine
+    environment:
+      DASHBOARD_COMMIT: 8ac6746079752a2919c85d468c75a940cbdd8861
+    command:
+      - /bin/sh
+      - -euc
+      - |
+        cp /custom/*.json /dashboards/
+        for dashboard in genai-observability genai-evaluations vectordb-observability mcp-observability gpu-monitoring; do
+          target="/dashboards/openlit-$${dashboard}.json"
+          if [ ! -s "$${target}" ]; then
+            wget -q --timeout=60 --tries=10 -O "$${target}" \
+              "https://raw.githubusercontent.com/grafana/grafana-aio11y-app/$${DASHBOARD_COMMIT}/mixin/genai-mixin/dashboards/$${dashboard}.json"
+          fi
+        done
+        python /patch/patch_openlit_dashboards.py /dashboards
+        echo "Provisioned custom dashboard and five pinned Grafana OpenLIT dashboards"
+    volumes:
+      - ./observability/grafana/dashboards:/custom:ro
+      - ./observability/grafana/patch_openlit_dashboards.py:/patch/patch_openlit_dashboards.py:ro
+      - dashboards-data:/dashboards
+    restart: "no"
+
+  streamlit-app:
+    <<: *app
+    command: ["streamlit", "run", "src/ui.py", "--server.address=0.0.0.0", "--server.port=8501"]
+    ports: ["8501:8501"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  evaluator-worker:
+    <<: *app
+    command: ["python", "-m", "src.worker"]
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: genai-evaluator-worker
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+
+  openlit-demo-workloads:
+    build: ./app
+    command: ["python", "-m", "src.demo_workloads"]
+    env_file: .env
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+      OTEL_SERVICE_NAME: openlit-demo-workloads
+      DEMO_GPU_SIMULATION: ${DEMO_GPU_SIMULATION:-true}
+      DEMO_WORKLOAD_INTERVAL_SECONDS: ${DEMO_WORKLOAD_INTERVAL_SECONDS:-1}
+    depends_on:
+      otel-collector:
+        condition: service_started
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.136.0
+    command: ["--config=/etc/otelcol/config.yaml"]
+    volumes:
+      - ./observability/collector/config.yaml:/etc/otelcol/config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on: [tempo, loki]
+
+  tempo:
+    image: grafana/tempo:2.8.2
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./observability/tempo/tempo.yaml:/etc/tempo.yaml:ro
+      - tempo-data:/var/tempo
+    ports: ["3200:3200"]
+
+  loki:
+    image: grafana/loki:3.5.5
+    command: ["-config.file=/etc/loki/local-config.yaml"]
+    volumes:
+      - ./observability/loki/loki.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+    ports: ["3100:3100"]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus"]
+    volumes:
+      - ./observability/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    depends_on: [otel-collector]
+
+  grafana:
+    image: grafana/grafana:12.1.1
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - dashboards-data:/var/lib/grafana/dashboards:ro
+    ports: ["3000:3000"]
+    depends_on:
+      prometheus:
+        condition: service_started
+      tempo:
+        condition: service_started
+      loki:
+        condition: service_started
+      dashboard-loader:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O- http://localhost:3000/api/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dashboards-data:
+  grafana-data:
+  loki-data:
+  prometheus-data:
+  redis-data:
+  tempo-data:

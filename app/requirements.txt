@@ -1,0 +1,8 @@
+openai==2.6.1
+openlit==1.45.0
+opentelemetry-api==1.45.2
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-grpc==1.45.2
+pydantic==2.12.0
+redis==6.4.0
+streamlit==1.50.0
